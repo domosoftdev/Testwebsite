@@ -1,0 +1,52 @@
+# messages.py
+
+MESSAGES = {
+    'en': {
+        'analyzing_cert': "--- Analyzing certificate for: {hostname} ---",
+        'trust_chain': "  Trust Chain",
+        'valid': "Valid",
+        'invalid': "INVALID",
+        'partially_valid': "PARTIALLY VALID (Intermediate certificate missing)",
+        'subject_cn': "  Subject CN",
+        'issuer_cn': "  Issuer CN",
+        'expires_on': "  Expires on",
+        'expired': "  Expired",
+        'yes': "Yes",
+        'no': "No",
+        'scanning_protocols': "\n--- Scanning supported protocols for: {hostname} ---",
+        'error': "  Error",
+        'validation_reason': "  Validation Reason",
+        'unverified_issuer': "  Could not verify issuer",
+        'weak_protocols_warning': "\n[!] WARNING: Weak protocols found: {protocols}",
+        'no_weak_protocols': "\n[+] No weak protocols detected.",
+        'could_not_connect': "Could not connect to {hostname}: {error_message}",
+        'unexpected_error': "An unexpected error occurred: {error}",
+        'connection_failed': "Connection failed.",
+        'could_not_scan_protocols': "Could not scan protocols: {error}",
+        'no_supported_protocols': "No supported protocols found."
+    },
+    'fr': {
+        'analyzing_cert': "--- Analyse du certificat pour : {hostname} ---",
+        'trust_chain': "  Chaîne de confiance",
+        'valid': "Valide",
+        'invalid': "INVALIDE",
+        'partially_valid': "PARTIELLEMENT VALIDE (Certificat intermédiaire manquant)",
+        'subject_cn': "  Sujet (CN)",
+        'issuer_cn': "  Émetteur (CN)",
+        'expires_on': "  Expire le",
+        'expired': "  Expiré",
+        'yes': "Oui",
+        'no': "Non",
+        'scanning_protocols': "\n--- Analyse des protocoles supportés pour : {hostname} ---",
+        'error': "  Erreur",
+        'validation_reason': "  Raison de la non-validation",
+        'unverified_issuer': "  Impossible de vérifier l'émetteur",
+        'weak_protocols_warning': "\n[!] ATTENTION : Protocoles faibles détectés : {protocols}",
+        'no_weak_protocols': "\n[+] Aucun protocole faible détecté.",
+        'could_not_connect': "Impossible de se connecter à {hostname}: {error_message}",
+        'unexpected_error': "Une erreur inattendue est survenue : {error}",
+        'connection_failed': "La connexion a échoué.",
+        'could_not_scan_protocols': "Impossible d'analyser les protocoles : {error}",
+        'no_supported_protocols': "Aucun protocole supporté n'a été trouvé."
+    }
+}
