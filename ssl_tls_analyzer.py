@@ -1,97 +1,97 @@
 """
 Module for comprehensive SSL/TLS analysis of a given host.
 
-Combines certificate details fetching with active protocol scanning
+Combines certificate details fetching and protocol scanning
 to provide a robust security overview. Can be used as a library or a standalone CLI tool.
 """
-
-import socket
-import ssl
-import warnings
-from datetime import datetime, timezone
-from OpenSSL import crypto
 import argparse
 import sys
+from datetime import datetime
 
-def get_certificate_details(hostname, port=443):
-    """
-    Fetches and parses the SSL/TLS certificate from a given host.
-    """
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection((hostname, port)) as sock:
-            with context.wrap_socket(sock, server_hostname=hostname) as sslsock:
-                cert_der = sslsock.getpeercert(binary_form=True)
-                x509 = crypto.load_certificate(crypto.FILETYPE_ASN1, cert_der)
-                subject = {comp[0].decode(): comp[1].decode() for comp in x509.get_subject().get_components()}
-                issuer = {comp[0].decode(): comp[1].decode() for comp in x509.get_issuer().get_components()}
-                not_after_str = x509.get_notAfter().decode('ascii')
-                expiration_date = datetime.strptime(not_after_str, '%Y%m%d%H%M%SZ')
-                is_expired = expiration_date < datetime.now(timezone.utc).replace(tzinfo=None)
-                return {
-                    "subject": subject,
-                    "issuer": issuer,
-                    "serial_number": x509.get_serial_number(),
-                    "version": x509.get_version(),
-                    "expiration_date": expiration_date.isoformat(),
-                    "is_expired": is_expired,
-                    "signature_algorithm": x509.get_signature_algorithm().decode('utf-8'),
-                }
-    except Exception as e:
-        return {"error": str(e)}
-
-def scan_supported_protocols(hostname, port=443):
-    """
-    Scans a host to determine which SSL/TLS protocols are supported.
-    Uses deprecated constants for broad compatibility but suppresses warnings.
-    """
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-    supported_protocols = {}
-    protocols_to_test = {
-        "TLSv1": ssl.PROTOCOL_TLSv1,
-        "TLSv1.1": ssl.PROTOCOL_TLSv1_1,
-        "TLSv1.2": ssl.PROTOCOL_TLSv1_2,
-    }
-    for name, version_const in protocols_to_test.items():
-        context = ssl.SSLContext(version_const)
-        try:
-            with socket.create_connection((hostname, port), timeout=2) as sock:
-                with context.wrap_socket(sock, server_hostname=hostname):
-                    supported_protocols[name] = True
-        except (ssl.SSLError, socket.timeout, ConnectionResetError):
-            supported_protocols[name] = False
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection((hostname, port), timeout=2) as sock:
-            with context.wrap_socket(sock, server_hostname=hostname) as sslsock:
-                if sslsock.version() == "TLSv1.3":
-                    supported_protocols["TLSv1.3"] = True
-                else:
-                    if "TLSv1.3" not in supported_protocols:
-                         supported_protocols["TLSv1.3"] = False
-    except (ssl.SSLError, socket.timeout, ConnectionResetError):
-        supported_protocols["TLSv1.3"] = False
-    weak_protocols_found = [
-        name for name, is_supported in supported_protocols.items()
-        if is_supported and name in ["TLSv1", "TLSv1.1"]
-    ]
-    return {
-        "protocols": supported_protocols,
-        "weak_protocols_found": weak_protocols_found
-    }
+import pytz
+from cryptography.x509.oid import NameOID
+from sslyze.errors import ConnectionToServerFailed
+from sslyze.scanner.models import ScanCommand, ServerScanRequest
+from sslyze.scanner.scanner import Scanner
+from sslyze.server_connectivity import ServerNetworkLocation
 
 def analyze_host(hostname, port=443):
     """
     Orchestrates the analysis of a host, combining certificate details and protocol scan.
-    This is the main entry point for using the module as a library.
     """
-    cert_details = get_certificate_details(hostname, port)
-    protocol_info = scan_supported_protocols(hostname, port)
+    try:
+        server_location = ServerNetworkLocation(hostname, port)
+        scan_request = ServerScanRequest(
+            server_location=server_location,
+            scan_commands={
+                ScanCommand.CERTIFICATE_INFO,
+                ScanCommand.SSL_2_0_CIPHER_SUITES,
+                ScanCommand.SSL_3_0_CIPHER_SUITES,
+                ScanCommand.TLS_1_0_CIPHER_SUITES,
+                ScanCommand.TLS_1_1_CIPHER_SUITES,
+                ScanCommand.TLS_1_2_CIPHER_SUITES,
+                ScanCommand.TLS_1_3_CIPHER_SUITES,
+            },
+        )
 
-    return {
-        "certificate_details": cert_details,
-        "protocol_analysis": protocol_info
-    }
+        scanner = Scanner()
+        scanner.queue_scans([scan_request])
+
+        result = next(scanner.get_results())
+
+        if isinstance(result, ConnectionToServerFailed):
+            return {
+                "certificate_details": {"error": f"Could not connect to {hostname}: {result.error_message}", "trust_chain_valid": False},
+                "protocol_analysis": {"error": "Connection failed."}
+            }
+
+        # Process certificate info
+        cert_info_result = result.scan_result.certificate_info.result
+        deployment = cert_info_result.certificate_deployments[0]
+        leaf_cert = deployment.received_certificate_chain[0]
+        trust_validation_result = deployment.path_validation_results[0]
+        subject = {attr.oid._name: attr.value for attr in leaf_cert.subject}
+        issuer = {attr.oid._name: attr.value for attr in leaf_cert.issuer}
+        is_expired = datetime.now(pytz.utc) > leaf_cert.not_valid_after_utc
+
+        cert_details = {
+            "subject": subject,
+            "issuer": issuer,
+            "expiration_date": leaf_cert.not_valid_after_utc.isoformat(),
+            "is_expired": is_expired,
+            "trust_chain_valid": trust_validation_result.was_validation_successful,
+            "validation_error": None if trust_validation_result.was_validation_successful else trust_validation_result.validation_error,
+        }
+
+        # Process protocol info
+        supported_protocols = {
+            "SSLv2": result.scan_result.ssl_2_0_cipher_suites.result is not None,
+            "SSLv3": result.scan_result.ssl_3_0_cipher_suites.result is not None,
+            "TLSv1": result.scan_result.tls_1_0_cipher_suites.result is not None,
+            "TLSv1.1": result.scan_result.tls_1_1_cipher_suites.result is not None,
+            "TLSv1.2": result.scan_result.tls_1_2_cipher_suites.result is not None,
+            "TLSv1.3": result.scan_result.tls_1_3_cipher_suites.result is not None,
+        }
+        weak_protocols_found = [
+            name for name, is_supported in supported_protocols.items()
+            if is_supported and name in ["SSLv2", "SSLv3", "TLSv1", "TLSv1.1"]
+        ]
+        protocol_analysis = {
+            "protocols": supported_protocols,
+            "weak_protocols_found": weak_protocols_found
+        }
+
+        return {
+            "certificate_details": cert_details,
+            "protocol_analysis": protocol_analysis
+        }
+
+    except Exception as e:
+        return {
+            "certificate_details": {"error": f"An unexpected error occurred: {str(e)}", "trust_chain_valid": False},
+            "protocol_analysis": {"error": str(e)}
+        }
+
 
 def main():
     """
@@ -106,30 +106,36 @@ def main():
     # Print Certificate Details
     print(f"--- Analyzing certificate for: {args.hostname} ---")
     details = results["certificate_details"]
-    if "error" in details:
-        print(f"An error occurred while fetching the certificate: {details['error']}", file=sys.stderr)
-        sys.exit(1)
 
-    print(f"  Subject: {details['subject'].get('CN')}")
-    print(f"  Issuer: {details['issuer'].get('CN')}")
-    print(f"  Expires on: {details['expiration_date']}")
-    print(f"  Expired: {'Yes' if details['is_expired'] else 'No'}")
+    if details and details.get("trust_chain_valid"):
+        print("  Trust Chain: Valid")
+        print(f"  Subject CN: {details['subject'].get('common_name')}")
+        print(f"  Issuer CN: {details['issuer'].get('common_name')}")
+        print(f"  Expires on: {details['expiration_date']}")
+        print(f"  Expired: {'Yes' if details['is_expired'] else 'No'}")
+    elif details:
+        print("  Trust Chain: INVALID")
+        if "error" in details:
+            print(f"  Error: {details['error']}", file=sys.stderr)
+        if "validation_error" in details and details["validation_error"]:
+             print(f"  Validation Reason: {details['validation_error']}", file=sys.stderr)
 
     # Print Protocol Analysis
     print(f"\n--- Scanning supported protocols for: {args.hostname} ---")
     protocol_info = results["protocol_analysis"]
-    if not any(protocol_info["protocols"].values()):
-        print("Could not determine supported protocols. Host may be down or blocking scans.", file=sys.stderr)
-        sys.exit(1)
-
-    for protocol, is_supported in sorted(protocol_info["protocols"].items()):
-        status = "Supported" if is_supported else "Not Supported"
-        print(f"  {protocol}: {status}")
-
-    if protocol_info["weak_protocols_found"]:
-        print(f"\n[!] WARNING: Weak protocols found: {', '.join(protocol_info['weak_protocols_found'])}")
+    if "error" in protocol_info:
+        print(f"Could not scan protocols: {protocol_info['error']}", file=sys.stderr)
+    elif not any(protocol_info["protocols"].values()):
+        print("No supported protocols found.", file=sys.stderr)
     else:
-        print("\n[+] No weak protocols detected.")
+        for protocol, is_supported in sorted(protocol_info["protocols"].items()):
+            status = "Supported" if is_supported else "Not Supported"
+            print(f"  {protocol}: {status}")
+
+        if protocol_info["weak_protocols_found"]:
+            print(f"\n[!] WARNING: Weak protocols found: {', '.join(protocol_info['weak_protocols_found'])}")
+        else:
+            print("\n[+] No weak protocols detected.")
 
 if __name__ == "__main__":
     main()
