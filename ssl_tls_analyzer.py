@@ -1,19 +1,16 @@
 """
 Module for comprehensive SSL/TLS analysis of a given host.
-
-Combines certificate details fetching and protocol scanning
-to provide a robust security overview. Can be used as a library or a standalone CLI tool.
 """
 import argparse
 import sys
 from datetime import datetime
-
 import pytz
 from cryptography.x509.oid import NameOID
 from sslyze.errors import ConnectionToServerFailed
 from sslyze.scanner.models import ScanCommand, ServerScanRequest
 from sslyze.scanner.scanner import Scanner
 from sslyze.server_connectivity import ServerNetworkLocation
+from messages import MESSAGES
 
 def analyze_host(hostname, port=443):
     """
@@ -41,22 +38,31 @@ def analyze_host(hostname, port=443):
 
         if isinstance(result, ConnectionToServerFailed):
             return {
-                "certificate_details": {"error": f"Could not connect to {hostname}: {result.error_message}", "trust_chain_valid": False},
+                "certificate_details": {"error": "Connection failed", "trust_chain_valid": False, "is_connectivity_error": True},
                 "protocol_analysis": {"error": "Connection failed."}
             }
 
         # Process certificate info
-        cert_info_result = result.scan_result.certificate_info.result
+        cert_info = result.scan_result.certificate_info
+        if cert_info.status != 'COMPLETED':
+             return {
+                "certificate_details": {"error": "Certificate scan failed", "trust_chain_valid": False},
+                "protocol_analysis": {"error": "Certificate scan failed."}
+            }
+
+        cert_info_result = cert_info.result
         deployment = cert_info_result.certificate_deployments[0]
         leaf_cert = deployment.received_certificate_chain[0]
         trust_validation_result = deployment.path_validation_results[0]
-        subject = {attr.oid._name: attr.value for attr in leaf_cert.subject}
-        issuer = {attr.oid._name: attr.value for attr in leaf_cert.issuer}
+
+        subject_attributes = {attr.oid: attr.value for attr in leaf_cert.subject}
+        issuer_attributes = {attr.oid: attr.value for attr in leaf_cert.issuer}
+
         is_expired = datetime.now(pytz.utc) > leaf_cert.not_valid_after_utc
 
         cert_details = {
-            "subject": subject,
-            "issuer": issuer,
+            "subject": subject_attributes,
+            "issuer": issuer_attributes,
             "expiration_date": leaf_cert.not_valid_after_utc.isoformat(),
             "is_expired": is_expired,
             "trust_chain_valid": trust_validation_result.was_validation_successful,
@@ -88,10 +94,9 @@ def analyze_host(hostname, port=443):
 
     except Exception as e:
         return {
-            "certificate_details": {"error": f"An unexpected error occurred: {str(e)}", "trust_chain_valid": False},
+            "certificate_details": {"error": str(e), "trust_chain_valid": False},
             "protocol_analysis": {"error": str(e)}
         }
-
 
 def main():
     """
@@ -99,43 +104,51 @@ def main():
     """
     parser = argparse.ArgumentParser(description="Analyze SSL/TLS configuration for a given host.")
     parser.add_argument("hostname", help="The hostname to analyze (e.g., google.com)")
+    parser.add_argument("--lang", help="Language for the output (en/fr)", default="fr", choices=['en', 'fr'])
     args = parser.parse_args()
+
+    lang = args.lang
+    msg = MESSAGES[lang]
 
     results = analyze_host(args.hostname)
 
-    # Print Certificate Details
-    print(f"--- Analyzing certificate for: {args.hostname} ---")
+    print(msg['analyzing_cert'].format(hostname=args.hostname))
     details = results["certificate_details"]
 
     if details and details.get("trust_chain_valid"):
-        print("  Trust Chain: Valid")
-        print(f"  Subject CN: {details['subject'].get('common_name')}")
-        print(f"  Issuer CN: {details['issuer'].get('common_name')}")
-        print(f"  Expires on: {details['expiration_date']}")
-        print(f"  Expired: {'Yes' if details['is_expired'] else 'No'}")
+        print(f"{msg['trust_chain']}: {msg['valid']}")
+        print(f"{msg['subject_cn']}: {details['subject'].get(NameOID.COMMON_NAME)}")
+        print(f"{msg['issuer_cn']}: {details['issuer'].get(NameOID.COMMON_NAME)}")
+        print(f"{msg['expires_on']}: {details['expiration_date']}")
+        print(f"{msg['expired']}: {msg['yes'] if details['is_expired'] else msg['no']}")
     elif details:
-        print("  Trust Chain: INVALID")
-        if "error" in details:
-            print(f"  Error: {details['error']}", file=sys.stderr)
-        if "validation_error" in details and details["validation_error"]:
-             print(f"  Validation Reason: {details['validation_error']}", file=sys.stderr)
+        is_connectivity_error = details.get("is_connectivity_error", False)
+        if not is_connectivity_error and details.get("subject"):
+            print(f"{msg['trust_chain']}: {msg['partially_valid']}")
+            print(f"{msg['subject_cn']}: {details['subject'].get(NameOID.COMMON_NAME)}")
+            print(f"{msg['unverified_issuer']}: {details['issuer'].get(NameOID.COMMON_NAME)}")
+            if details['validation_error']:
+                print(f"{msg['validation_reason']}: {details['validation_error']}", file=sys.stderr)
+        else:
+            print(f"{msg['trust_chain']}: {msg['invalid']}")
+            if "error" in details:
+                print(f"{msg['error']}: {details['error']}", file=sys.stderr)
 
-    # Print Protocol Analysis
-    print(f"\n--- Scanning supported protocols for: {args.hostname} ---")
+    print(msg['scanning_protocols'].format(hostname=args.hostname))
     protocol_info = results["protocol_analysis"]
     if "error" in protocol_info:
-        print(f"Could not scan protocols: {protocol_info['error']}", file=sys.stderr)
-    elif not any(protocol_info["protocols"].values()):
-        print("No supported protocols found.", file=sys.stderr)
-    else:
+        print(f"{msg['could_not_scan_protocols'].format(error=protocol_info['error'])}", file=sys.stderr)
+    elif "protocols" in protocol_info and not any(protocol_info["protocols"].values()):
+        print(f"{msg['no_supported_protocols']}", file=sys.stderr)
+    elif "protocols" in protocol_info:
         for protocol, is_supported in sorted(protocol_info["protocols"].items()):
-            status = "Supported" if is_supported else "Not Supported"
+            status = msg['valid'] if is_supported else msg['no']
             print(f"  {protocol}: {status}")
 
         if protocol_info["weak_protocols_found"]:
-            print(f"\n[!] WARNING: Weak protocols found: {', '.join(protocol_info['weak_protocols_found'])}")
+            print(msg['weak_protocols_warning'].format(protocols=', '.join(protocol_info['weak_protocols_found'])))
         else:
-            print("\n[+] No weak protocols detected.")
+            print(msg['no_weak_protocols'])
 
 if __name__ == "__main__":
     main()
