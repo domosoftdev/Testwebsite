@@ -1,1 +1,3 @@
-pyOpenSSL
+sslyze
+cryptography
+pytz
