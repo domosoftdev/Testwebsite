@@ -143,7 +143,8 @@ def main():
     elif "protocols" in protocol_info:
         for protocol, is_supported in sorted(protocol_info["protocols"].items()):
             status = msg['supported'] if is_supported else msg['not_supported']
-            print(f"  {protocol}: {status}")
+            weak_tag = f" {msg['weak_tag']}" if is_supported and protocol in protocol_info['weak_protocols_found'] else ""
+            print(f"  {protocol}: {status}{weak_tag}")
 
         if protocol_info["weak_protocols_found"]:
             print(msg['weak_protocols_warning'].format(protocols=', '.join(protocol_info['weak_protocols_found'])))
