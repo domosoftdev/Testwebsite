@@ -142,7 +142,7 @@ def main():
         print(f"{msg['no_supported_protocols']}", file=sys.stderr)
     elif "protocols" in protocol_info:
         for protocol, is_supported in sorted(protocol_info["protocols"].items()):
-            status = msg['valid'] if is_supported else msg['no']
+            status = msg['supported'] if is_supported else msg['not_supported']
             print(f"  {protocol}: {status}")
 
         if protocol_info["weak_protocols_found"]:
